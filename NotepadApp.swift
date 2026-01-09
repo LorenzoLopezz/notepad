@@ -2,6 +2,8 @@ import SwiftUI
 
 @main
 struct NotepadApp: App {
+    @FocusedValue(\.newNoteAction) private var newNoteAction
+
     var body: some Scene {
         WindowGroup {
             ContentView()
@@ -9,7 +11,12 @@ struct NotepadApp: App {
         }
         .commands {
             // The app saves automatically, so file commands are not needed.
-            CommandGroup(replacing: .newItem) { }
+            CommandGroup(replacing: .newItem) {
+                Button("Nueva nota") {
+                    newNoteAction?()
+                }
+                .keyboardShortcut("n", modifiers: [.command])
+            }
             CommandGroup(replacing: .saveItem) { }
             CommandGroup(replacing: .importExport) { }
         }
