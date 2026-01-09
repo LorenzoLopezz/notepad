@@ -1,0 +1,17 @@
+import SwiftUI
+
+@main
+struct NotepadApp: App {
+    var body: some Scene {
+        WindowGroup {
+            ContentView()
+                .frame(minWidth: 600, minHeight: 480)
+        }
+        .commands {
+            // The app saves automatically, so file commands are not needed.
+            CommandGroup(replacing: .newItem) { }
+            CommandGroup(replacing: .saveItem) { }
+            CommandGroup(replacing: .importExport) { }
+        }
+    }
+}
