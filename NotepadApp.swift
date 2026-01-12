@@ -3,6 +3,7 @@ import SwiftUI
 @main
 struct NotepadApp: App {
     @FocusedValue(\.newNoteAction) private var newNoteAction
+    @FocusedValue(\.resetContentAction) private var resetContentAction
 
     var body: some Scene {
         WindowGroup {
@@ -16,6 +17,13 @@ struct NotepadApp: App {
                     newNoteAction?()
                 }
                 .keyboardShortcut("n", modifiers: [.command])
+            }
+            CommandGroup(after: .newItem) {
+                Button("Restablecer contenido") {
+                    resetContentAction?()
+                }
+                .keyboardShortcut("l", modifiers: [.command])
+                .disabled(resetContentAction == nil)
             }
             CommandGroup(replacing: .saveItem) { }
             CommandGroup(replacing: .importExport) { }

@@ -12,10 +12,19 @@ struct NewNoteActionKey: FocusedValueKey {
     typealias Value = () -> Void
 }
 
+struct ResetContentActionKey: FocusedValueKey {
+    typealias Value = () -> Void
+}
+
 extension FocusedValues {
     var newNoteAction: (() -> Void)? {
         get { self[NewNoteActionKey.self] }
         set { self[NewNoteActionKey.self] = newValue }
+    }
+
+    var resetContentAction: (() -> Void)? {
+        get { self[ResetContentActionKey.self] }
+        set { self[ResetContentActionKey.self] = newValue }
     }
 }
 
@@ -133,6 +142,7 @@ struct ContentView: View {
         }
         .background(Color(nsColor: .textBackgroundColor))
         .focusedValue(\.newNoteAction, addTab)
+        .focusedValue(\.resetContentAction, resetContent)
         .toolbar { toolbarContent }
         .onAppear(perform: loadTabsIfNeeded)
         .onChange(of: tabs) { _ in
@@ -149,6 +159,15 @@ struct ContentView: View {
         } message: {
             Text("Se perdera el contenido de esta pestaña")
         }
+    }
+
+    private func resetContent() {
+        guard let selectedTabID,
+              let index = tabs.firstIndex(where: { $0.id == selectedTabID }) else {
+            return
+        }
+        tabs[index].text = ""
+        tabs[index].title = ""
     }
 
     private func editorView(for selectedTabID: UUID) -> some View {
