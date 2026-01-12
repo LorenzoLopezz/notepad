@@ -18,6 +18,91 @@ extension FocusedValues {
     }
 }
 
+final class NormalizedTextView: NSTextView {
+    var normalize: (String) -> String = { $0 }
+
+    override func paste(_ sender: Any?) {
+        if let string = NSPasteboard.general.string(forType: .string) {
+            let normalized = normalize(string)
+            insertText(normalized, replacementRange: selectedRange())
+            return
+        }
+        super.paste(sender)
+    }
+}
+
+struct NormalizedTextEditor: NSViewRepresentable {
+    @Binding var text: String
+    var fontSize: Double
+    var normalize: (String) -> String
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(self)
+    }
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let scrollView = NSScrollView()
+        scrollView.hasVerticalScroller = true
+        scrollView.drawsBackground = false
+
+        let textView = NormalizedTextView()
+        textView.delegate = context.coordinator
+        textView.isEditable = true
+        textView.isSelectable = true
+        textView.allowsUndo = true
+        textView.isRichText = false
+        textView.isAutomaticQuoteSubstitutionEnabled = false
+        textView.isAutomaticDashSubstitutionEnabled = false
+        textView.font = NSFont.systemFont(ofSize: fontSize)
+        textView.textContainerInset = NSSize(width: 8, height: 8)
+        textView.string = text
+        textView.normalize = normalize
+
+        scrollView.documentView = textView
+        return scrollView
+    }
+
+    func updateNSView(_ nsView: NSScrollView, context: Context) {
+        guard let textView = nsView.documentView as? NormalizedTextView else { return }
+        textView.normalize = normalize
+        if Double(textView.font?.pointSize ?? 0) != fontSize {
+            textView.font = NSFont.systemFont(ofSize: fontSize)
+        }
+        if textView.string != text {
+            context.coordinator.isUpdating = true
+            textView.string = text
+            context.coordinator.isUpdating = false
+        }
+    }
+
+    final class Coordinator: NSObject, NSTextViewDelegate {
+        let parent: NormalizedTextEditor
+        var isUpdating = false
+
+        init(_ parent: NormalizedTextEditor) {
+            self.parent = parent
+        }
+
+        func textDidChange(_ notification: Notification) {
+            guard !isUpdating,
+                  let textView = notification.object as? NSTextView else {
+                return
+            }
+            let normalized = parent.normalize(textView.string)
+            if normalized != textView.string {
+                isUpdating = true
+                let selectedRanges = textView.selectedRanges
+                textView.string = normalized
+                textView.selectedRanges = selectedRanges
+                isUpdating = false
+            }
+            if parent.text != normalized {
+                parent.text = normalized
+            }
+        }
+    }
+}
+
 struct ContentView: View {
     @AppStorage("notepadTabs") private var tabsData: Data = Data()
     @AppStorage("notepadSelectedTabID") private var selectedTabIDString: String = ""
@@ -44,9 +129,12 @@ struct ContentView: View {
                 Divider()
                     .padding(.horizontal, 12)
 
-                TextEditor(text: bindingForText(selectedTabID))
-                    .font(.system(size: fontSize))
-                    .padding(12)
+                NormalizedTextEditor(
+                    text: bindingForText(selectedTabID),
+                    fontSize: fontSize,
+                    normalize: normalizeApostrophes
+                )
+                .padding(12)
             } else {
                 Text("Sin pestanas")
                     .padding(12)
@@ -142,7 +230,7 @@ struct ContentView: View {
         }
 
         if let restoredID = UUID(uuidString: selectedTabIDString),
-           tabs.contains(where: { $0.id == restoredID }) {
+          tabs.contains(where: { $0.id == restoredID }) {
             selectedTabID = restoredID
         } else {
             selectedTabID = tabs.first?.id
@@ -188,7 +276,7 @@ struct ContentView: View {
             get: { tabs.first(where: { $0.id == id })?.text ?? "" },
             set: { newValue in
                 guard let index = tabs.firstIndex(where: { $0.id == id }) else { return }
-                tabs[index].text = newValue
+                tabs[index].text = normalizeApostrophes(in: newValue)
             }
         )
     }
@@ -198,13 +286,20 @@ struct ContentView: View {
             get: { tabs.first(where: { $0.id == id })?.title ?? "" },
             set: { newValue in
                 guard let index = tabs.firstIndex(where: { $0.id == id }) else { return }
-                if newValue.count > maxTitleLength {
-                    tabs[index].title = String(newValue.prefix(maxTitleLength))
+                let normalized = normalizeApostrophes(in: newValue)
+                if normalized.count > maxTitleLength {
+                    tabs[index].title = String(normalized.prefix(maxTitleLength))
                     return
                 }
-                tabs[index].title = newValue
+                tabs[index].title = normalized
             }
         )
+    }
+
+    private func normalizeApostrophes(in text: String) -> String {
+        text
+            .replacingOccurrences(of: "’", with: "'")
+            .replacingOccurrences(of: "‘", with: "'")
     }
 
 }
