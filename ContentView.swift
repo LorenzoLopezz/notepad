@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct NoteTab: Identifiable, Codable, Equatable {
     var id: UUID
@@ -118,23 +119,13 @@ struct ContentView: View {
     private let maxTitleLength = 40
 
     var body: some View {
+        mainContent
+    }
+
+    private var mainContent: some View {
         VStack(alignment: .leading, spacing: 8) {
             if let selectedTabID {
-                TextField("Titulo", text: bindingForTitle(selectedTabID))
-                    .textFieldStyle(.plain)
-                    .font(.system(size: max(fontSize + 8, 24), weight: .bold))
-                    .padding(.horizontal, 12)
-                    .padding(.top, 12)
-
-                Divider()
-                    .padding(.horizontal, 12)
-
-                NormalizedTextEditor(
-                    text: bindingForText(selectedTabID),
-                    fontSize: fontSize,
-                    normalize: normalizeApostrophes
-                )
-                .padding(12)
+                editorView(for: selectedTabID)
             } else {
                 Text("Sin pestanas")
                     .padding(12)
@@ -142,43 +133,7 @@ struct ContentView: View {
         }
         .background(Color(nsColor: .textBackgroundColor))
         .focusedValue(\.newNoteAction, addTab)
-        .toolbar {
-            ToolbarItem {
-                Picker("Pestañas", selection: $selectedTabID) {
-                    ForEach(tabs) { tab in
-                        Text(displayTitle(tab.title))
-                            .tag(Optional(tab.id))
-                    }
-                }
-                .pickerStyle(.menu)
-                .frame(minWidth: 160)
-            }
-
-            ToolbarItemGroup {
-                Button(action: addTab) {
-                    Image(systemName: "plus")
-                }
-                .help("Nueva pestaña")
-
-                Button(action: requestDeleteTab) {
-                    Image(systemName: "trash")
-                }
-                .help("Cerrar pestaña")
-                .disabled(tabs.count <= 1)
-            }
-
-            ToolbarItemGroup {
-                Button(action: decreaseFont) {
-                    Image(systemName: "textformat.size.smaller")
-                }
-                .help("Disminuir tamano")
-
-                Button(action: increaseFont) {
-                    Image(systemName: "textformat.size.larger")
-                }
-                .help("Aumentar tamano")
-            }
-        }
+        .toolbar { toolbarContent }
         .onAppear(perform: loadTabsIfNeeded)
         .onChange(of: tabs) { _ in
             saveTabs()
@@ -196,12 +151,108 @@ struct ContentView: View {
         }
     }
 
+    private func editorView(for selectedTabID: UUID) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            TextField("Titulo", text: bindingForTitle(selectedTabID))
+                .textFieldStyle(.plain)
+                .font(.system(size: max(fontSize + 8, 24), weight: .bold))
+                .padding(.horizontal, 12)
+                .padding(.top, 12)
+
+            Divider()
+                .padding(.horizontal, 12)
+
+            NormalizedTextEditor(
+                text: bindingForText(selectedTabID),
+                fontSize: fontSize,
+                normalize: normalizeApostrophes
+            )
+            .padding(12)
+        }
+    }
+
+    @ToolbarContentBuilder
+    private var toolbarContent: some ToolbarContent {
+        ToolbarItem {
+            Picker("Pestañas", selection: $selectedTabID) {
+                ForEach(tabs) { tab in
+                    Text(displayTitle(tab.title))
+                        .tag(Optional(tab.id))
+                }
+            }
+            .pickerStyle(.menu)
+            .frame(minWidth: 60, maxWidth: 100)
+        }
+
+        ToolbarItemGroup {
+            HStack {
+                Button(action: addTab) {
+                    Image(systemName: "plus")
+                }
+                .help("Nueva pestaña")
+
+                Button(action: requestDeleteTab) {
+                    Image(systemName: "trash")
+                }
+                .help("Cerrar pestaña")
+                .disabled(tabs.count <= 1)
+
+                Button(action: decreaseFont) {
+                    Image(systemName: "textformat.size.smaller")
+                }
+                .help("Disminuir tamano")
+
+                Button(action: increaseFont) {
+                    Image(systemName: "textformat.size.larger")
+                }
+                .help("Aumentar tamano")
+
+                Button(action: exportCurrentTab) {
+                    Image(systemName: "externaldrive")
+                }
+                .help("Exportar")
+                .disabled(selectedTabID == nil)
+            }
+            .frame(minWidth: 60, alignment: .leading)
+        }
+    }
+
     private func decreaseFont() {
         fontSize = max(minFontSize, fontSize - 1)
     }
 
     private func increaseFont() {
         fontSize = min(maxFontSize, fontSize + 1)
+    }
+
+    private func exportCurrentTab() {
+        guard let selectedTabID,
+              let tab = tabs.first(where: { $0.id == selectedTabID }) else {
+            return
+        }
+
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.plainText]
+        panel.canCreateDirectories = true
+        panel.nameFieldStringValue = "\(safeFileName(tab.title)).txt"
+
+        panel.begin { response in
+            guard response == .OK, let url = panel.url else { return }
+            do {
+                try tab.text.write(to: url, atomically: true, encoding: .utf8)
+            } catch {
+                NSLog("No se pudo exportar la nota: \(error)")
+            }
+        }
+    }
+
+    private func safeFileName(_ title: String) -> String {
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            return "nota"
+        }
+        let cleaned = trimmed.replacingOccurrences(of: "/", with: "-")
+        return cleaned.isEmpty ? "nota" : cleaned
     }
 
     private func displayTitle(_ title: String) -> String {
