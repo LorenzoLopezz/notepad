@@ -2,12 +2,6 @@ import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
-struct NoteTab: Identifiable, Codable, Equatable {
-    var id: UUID
-    var title: String
-    var text: String
-}
-
 struct NewNoteActionKey: FocusedValueKey {
     typealias Value = () -> Void
 }
@@ -73,6 +67,7 @@ struct NormalizedTextEditor: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: NSScrollView, context: Context) {
+        context.coordinator.parent = self
         guard let textView = nsView.documentView as? NormalizedTextView else { return }
         textView.normalize = normalize
         if Double(textView.font?.pointSize ?? 0) != fontSize {
@@ -86,7 +81,7 @@ struct NormalizedTextEditor: NSViewRepresentable {
     }
 
     final class Coordinator: NSObject, NSTextViewDelegate {
-        let parent: NormalizedTextEditor
+        var parent: NormalizedTextEditor
         var isUpdating = false
 
         init(_ parent: NormalizedTextEditor) {
@@ -114,14 +109,16 @@ struct NormalizedTextEditor: NSViewRepresentable {
 }
 
 struct ContentView: View {
-    @AppStorage("notepadTabs") private var tabsData: Data = Data()
     @AppStorage("notepadSelectedTabID") private var selectedTabIDString: String = ""
     @AppStorage("notepadFontSize") private var fontSize: Double = 16
 
-    @State private var tabs: [NoteTab] = []
+    @State private var tabs: [Note] = []
     @State private var selectedTabID: UUID? = nil
     @State private var hasLoaded = false
     @State private var showDeleteAlert = false
+    
+    // Auto-save timer: 5 seconds
+    private let timer = Timer.publish(every: 5, on: .main, in: .common).autoconnect()
 
     private let minFontSize: Double = 10
     private let maxFontSize: Double = 36
@@ -136,7 +133,7 @@ struct ContentView: View {
             if let selectedTabID {
                 editorView(for: selectedTabID)
             } else {
-                Text("Sin pestanas")
+                Text("Sin pestañas")
                     .padding(12)
             }
         }
@@ -145,8 +142,8 @@ struct ContentView: View {
         .focusedValue(\.resetContentAction, resetContent)
         .toolbar { toolbarContent }
         .onAppear(perform: loadTabsIfNeeded)
-        .onChange(of: tabs) { _ in
-            saveTabs()
+        .onReceive(timer) { _ in
+            saveAllTabs()
         }
         .onChange(of: selectedTabID) { newValue in
             selectedTabIDString = newValue?.uuidString ?? ""
@@ -157,7 +154,13 @@ struct ContentView: View {
                 removeSelectedTab()
             }
         } message: {
-            Text("Se perdera el contenido de esta pestaña")
+            Text("Se perderá el contenido de esta pestaña de forma permanente.")
+        }
+    }
+    
+    private func saveAllTabs() {
+        for tab in tabs {
+            NotePersistence.shared.save(tab)
         }
     }
 
@@ -168,11 +171,13 @@ struct ContentView: View {
         }
         tabs[index].text = ""
         tabs[index].title = ""
+        // Immediate save on reset
+        NotePersistence.shared.save(tabs[index])
     }
 
     private func editorView(for selectedTabID: UUID) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            TextField("Titulo", text: bindingForTitle(selectedTabID))
+            TextField("Título", text: bindingForTitle(selectedTabID))
                 .textFieldStyle(.plain)
                 .font(.system(size: max(fontSize + 8, 24), weight: .bold))
                 .padding(.horizontal, 12)
@@ -186,6 +191,7 @@ struct ContentView: View {
                 fontSize: fontSize,
                 normalize: normalizeApostrophes
             )
+            .id(selectedTabID) // Force recreation when switching tabs
             .padding(12)
         }
     }
@@ -219,12 +225,12 @@ struct ContentView: View {
                 Button(action: decreaseFont) {
                     Image(systemName: "textformat.size.smaller")
                 }
-                .help("Disminuir tamano")
+                .help("Disminuir tamaño")
 
                 Button(action: increaseFont) {
                     Image(systemName: "textformat.size.larger")
                 }
-                .help("Aumentar tamano")
+                .help("Aumentar tamaño")
 
                 Button(action: exportCurrentTab) {
                     Image(systemName: "externaldrive")
@@ -275,7 +281,7 @@ struct ContentView: View {
     }
 
     private func displayTitle(_ title: String) -> String {
-        let trimmed = title.isEmpty ? "Sin titulo" : title
+        let trimmed = title.isEmpty ? "Sin título" : title
         if trimmed.count > 20 {
             let prefixText = String(trimmed.prefix(20))
             return "\(prefixText)..."
@@ -293,10 +299,14 @@ struct ContentView: View {
         guard !hasLoaded else { return }
         hasLoaded = true
 
-        if let decoded = decodeTabs(from: tabsData), !decoded.isEmpty {
-            tabs = decoded
+        let loaded = NotePersistence.shared.loadAll()
+        if !loaded.isEmpty {
+            tabs = loaded
         } else {
-            tabs = [NoteTab(id: UUID(), title: "Nota 1", text: "")]
+            // Start with a new note if none exist
+            let newNote = Note(title: "Nota 1", text: "")
+            tabs = [newNote]
+            NotePersistence.shared.save(newNote)
         }
 
         if let restoredID = UUID(uuidString: selectedTabIDString),
@@ -307,21 +317,11 @@ struct ContentView: View {
         }
     }
 
-    private func saveTabs() {
-        if let data = try? JSONEncoder().encode(tabs) {
-            tabsData = data
-        }
-    }
-
-    private func decodeTabs(from data: Data) -> [NoteTab]? {
-        guard !data.isEmpty else { return nil }
-        return try? JSONDecoder().decode([NoteTab].self, from: data)
-    }
-
     private func addTab() {
-        let newTab = NoteTab(id: UUID(), title: "Nota \(tabs.count + 1)", text: "")
+        let newTab = Note(title: "Nota \(tabs.count + 1)", text: "")
         tabs.append(newTab)
         selectedTabID = newTab.id
+        NotePersistence.shared.save(newTab)
     }
 
     private func removeSelectedTab() {
@@ -330,11 +330,15 @@ struct ContentView: View {
             return
         }
 
+        let noteToDelete = tabs[index]
+        NotePersistence.shared.delete(noteToDelete)
+        
         tabs.remove(at: index)
         if tabs.isEmpty {
-            let fallback = NoteTab(id: UUID(), title: "Nota 1", text: "")
+            let fallback = Note(title: "Nota 1", text: "")
             tabs = [fallback]
             self.selectedTabID = fallback.id
+            NotePersistence.shared.save(fallback)
         } else {
             let newIndex = min(index, tabs.count - 1)
             self.selectedTabID = tabs[newIndex].id
@@ -347,6 +351,8 @@ struct ContentView: View {
             set: { newValue in
                 guard let index = tabs.firstIndex(where: { $0.id == id }) else { return }
                 tabs[index].text = normalizeApostrophes(in: newValue)
+                // Note: We don't save immediately here to avoid I/O thrashing; timer handles it.
+                // However, for safety, one could save here too, but timer is requested.
             }
         )
     }
@@ -359,9 +365,10 @@ struct ContentView: View {
                 let normalized = normalizeApostrophes(in: newValue)
                 if normalized.count > maxTitleLength {
                     tabs[index].title = String(normalized.prefix(maxTitleLength))
-                    return
+                } else {
+                    tabs[index].title = normalized
                 }
-                tabs[index].title = normalized
+                // Similar to text, let the timer handle saving.
             }
         )
     }

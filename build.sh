@@ -21,6 +21,8 @@ swiftc \
   -framework AppKit \
   "$ROOT_DIR/NotepadApp.swift" \
   "$ROOT_DIR/ContentView.swift" \
+  "$ROOT_DIR/Note.swift" \
+  "$ROOT_DIR/NotePersistence.swift" \
   -o "$MACOS_DIR/$APP_NAME"
 
 cp "$ROOT_DIR/Info.plist" "$APP_DIR/Contents/Info.plist"
