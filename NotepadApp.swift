@@ -1,9 +1,18 @@
 import SwiftUI
 
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        NotificationCenter.default.post(name: autosaveNotification, object: nil)
+        return .terminateNow
+    }
+}
+
 @main
 struct NotepadApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @FocusedValue(\.newNoteAction) private var newNoteAction
     @FocusedValue(\.resetContentAction) private var resetContentAction
+    @FocusedValue(\.saveNowAction) private var saveNowAction
 
     var body: some Scene {
         WindowGroup {
@@ -25,7 +34,13 @@ struct NotepadApp: App {
                 .keyboardShortcut("l", modifiers: [.command])
                 .disabled(resetContentAction == nil)
             }
-            CommandGroup(replacing: .saveItem) { }
+            CommandGroup(replacing: .saveItem) {
+                Button("Guardar") {
+                    saveNowAction?()
+                }
+                .keyboardShortcut("s", modifiers: [.command])
+                .disabled(saveNowAction == nil)
+            }
             CommandGroup(replacing: .importExport) { }
         }
     }

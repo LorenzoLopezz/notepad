@@ -2,11 +2,17 @@ import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
+let autosaveNotification = Notification.Name("NotepadAutosaveNow")
+
 struct NewNoteActionKey: FocusedValueKey {
     typealias Value = () -> Void
 }
 
 struct ResetContentActionKey: FocusedValueKey {
+    typealias Value = () -> Void
+}
+
+struct SaveNowActionKey: FocusedValueKey {
     typealias Value = () -> Void
 }
 
@@ -19,6 +25,11 @@ extension FocusedValues {
     var resetContentAction: (() -> Void)? {
         get { self[ResetContentActionKey.self] }
         set { self[ResetContentActionKey.self] = newValue }
+    }
+
+    var saveNowAction: (() -> Void)? {
+        get { self[SaveNowActionKey.self] }
+        set { self[SaveNowActionKey.self] = newValue }
     }
 }
 
@@ -116,10 +127,9 @@ struct ContentView: View {
     @State private var selectedTabID: UUID? = nil
     @State private var hasLoaded = false
     @State private var showDeleteAlert = false
-    
-    // Auto-save timer: 5 seconds
-    private let timer = Timer.publish(every: 5, on: .main, in: .common).autoconnect()
+    @State private var autosaveWorkItem: DispatchWorkItem?
 
+    private let autosaveInterval: TimeInterval = 5
     private let minFontSize: Double = 10
     private let maxFontSize: Double = 36
     private let maxTitleLength = 40
@@ -140,9 +150,13 @@ struct ContentView: View {
         .background(Color(nsColor: .textBackgroundColor))
         .focusedValue(\.newNoteAction, addTab)
         .focusedValue(\.resetContentAction, resetContent)
+        .focusedValue(\.saveNowAction, manualSave)
         .toolbar { toolbarContent }
         .onAppear(perform: loadTabsIfNeeded)
-        .onReceive(timer) { _ in
+        .onReceive(NotificationCenter.default.publisher(for: autosaveNotification)) { _ in
+            saveAllTabs()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
             saveAllTabs()
         }
         .onChange(of: selectedTabID) { newValue in
@@ -159,9 +173,27 @@ struct ContentView: View {
     }
     
     private func saveAllTabs() {
+        autosaveWorkItem?.cancel()
+        autosaveWorkItem = nil
         for tab in tabs {
             NotePersistence.shared.save(tab)
         }
+    }
+
+    private func manualSave() {
+        saveAllTabs()
+        scheduleAutosave()
+    }
+
+    private func scheduleAutosave() {
+        autosaveWorkItem?.cancel()
+
+        let workItem = DispatchWorkItem {
+            saveAllTabs()
+        }
+
+        autosaveWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + autosaveInterval, execute: workItem)
     }
 
     private func resetContent() {
@@ -237,6 +269,11 @@ struct ContentView: View {
                 }
                 .help("Exportar")
                 .disabled(selectedTabID == nil)
+
+                Button(action: manualSave) {
+                    Image(systemName: "square.and.arrow.down")
+                }
+                .help("Guardar ahora")
             }
             .frame(minWidth: 60, alignment: .leading)
         }
@@ -351,8 +388,7 @@ struct ContentView: View {
             set: { newValue in
                 guard let index = tabs.firstIndex(where: { $0.id == id }) else { return }
                 tabs[index].text = normalizeApostrophes(in: newValue)
-                // Note: We don't save immediately here to avoid I/O thrashing; timer handles it.
-                // However, for safety, one could save here too, but timer is requested.
+                scheduleAutosave()
             }
         )
     }
@@ -368,7 +404,7 @@ struct ContentView: View {
                 } else {
                     tabs[index].title = normalized
                 }
-                // Similar to text, let the timer handle saving.
+                scheduleAutosave()
             }
         )
     }
