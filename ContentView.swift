@@ -4,6 +4,400 @@ import UniformTypeIdentifiers
 
 let autosaveNotification = Notification.Name("NotepadAutosaveNow")
 
+struct MarkdownPreviewView: NSViewRepresentable {
+    let text: String
+    let baseFontSize: Double
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let scrollView = NSScrollView()
+        scrollView.hasVerticalScroller = true
+        scrollView.drawsBackground = false
+
+        let textView = NSTextView()
+        textView.isEditable = false
+        textView.isSelectable = true
+        textView.drawsBackground = false
+        textView.textContainerInset = NSSize(width: 18, height: 18)
+        textView.textContainer?.widthTracksTextView = true
+        textView.textContainer?.containerSize = NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude)
+        textView.linkTextAttributes = [
+            .foregroundColor: NSColor.controlAccentColor,
+            .underlineStyle: NSUnderlineStyle.single.rawValue
+        ]
+
+        scrollView.documentView = textView
+        return scrollView
+    }
+
+    func updateNSView(_ nsView: NSScrollView, context: Context) {
+        guard let textView = nsView.documentView as? NSTextView else { return }
+        let rendered = MarkdownPreviewRenderer.render(text: text, baseFontSize: baseFontSize)
+        textView.textStorage?.setAttributedString(rendered)
+    }
+}
+
+private enum MarkdownPreviewRenderer {
+    static func render(text: String, baseFontSize: Double) -> NSAttributedString {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return NSAttributedString(
+                string: "Sin contenido",
+                attributes: placeholderAttributes(baseFontSize: baseFontSize)
+            )
+        }
+
+        let result = NSMutableAttributedString()
+        let normalized = text.replacingOccurrences(of: "\r\n", with: "\n")
+        let lines = normalized.components(separatedBy: "\n")
+
+        var paragraphBuffer: [String] = []
+        var codeBlockLines: [String] = []
+        var isInsideCodeBlock = false
+
+        func flushParagraph() {
+            guard !paragraphBuffer.isEmpty else { return }
+            let paragraphText = paragraphBuffer.joined(separator: " ")
+            result.append(paragraph(paragraphText, baseFontSize: baseFontSize))
+            paragraphBuffer.removeAll()
+        }
+
+        for line in lines {
+            let trimmedLine = line.trimmingCharacters(in: .whitespaces)
+
+            if trimmedLine.hasPrefix("```") {
+                flushParagraph()
+                if isInsideCodeBlock {
+                    result.append(codeBlock(codeBlockLines.joined(separator: "\n"), baseFontSize: baseFontSize))
+                    codeBlockLines.removeAll()
+                }
+                isInsideCodeBlock.toggle()
+                continue
+            }
+
+            if isInsideCodeBlock {
+                codeBlockLines.append(line)
+                continue
+            }
+
+            if trimmedLine.isEmpty {
+                flushParagraph()
+                continue
+            }
+
+            if let heading = headingMatch(for: line) {
+                flushParagraph()
+                result.append(headingBlock(level: heading.level, text: heading.text, baseFontSize: baseFontSize))
+                continue
+            }
+
+            if isHorizontalRule(trimmedLine) {
+                flushParagraph()
+                result.append(horizontalRule(baseFontSize: baseFontSize))
+                continue
+            }
+
+            if let listItem = listMatch(for: line) {
+                flushParagraph()
+                result.append(listBlock(marker: listItem.marker, text: listItem.text, indentLevel: listItem.indentLevel, ordered: listItem.ordered, baseFontSize: baseFontSize))
+                continue
+            }
+
+            if let quoteText = quoteMatch(for: line) {
+                flushParagraph()
+                result.append(blockQuote(quoteText, baseFontSize: baseFontSize))
+                continue
+            }
+
+            paragraphBuffer.append(trimmedLine)
+        }
+
+        flushParagraph()
+
+        if isInsideCodeBlock, !codeBlockLines.isEmpty {
+            result.append(codeBlock(codeBlockLines.joined(separator: "\n"), baseFontSize: baseFontSize))
+        }
+
+        return result
+    }
+
+    private static func placeholderAttributes(baseFontSize: Double) -> [NSAttributedString.Key: Any] {
+        [
+            .font: NSFont.systemFont(ofSize: baseFontSize),
+            .foregroundColor: NSColor.secondaryLabelColor
+        ]
+    }
+
+    private static func paragraph(_ text: String, baseFontSize: Double) -> NSAttributedString {
+        attributedInlineText(
+            text,
+            attributes: blockAttributes(
+                font: .systemFont(ofSize: baseFontSize),
+                color: .labelColor,
+                lineSpacing: 3,
+                paragraphSpacing: 7
+            ),
+            baseFontSize: baseFontSize
+        )
+    }
+
+    private static func headingBlock(level: Int, text: String, baseFontSize: Double) -> NSAttributedString {
+        let sizeMap: [CGFloat] = [
+            max(baseFontSize + 16, 28),
+            max(baseFontSize + 10, 24),
+            max(baseFontSize + 6, 21),
+            max(baseFontSize + 3, 18),
+            max(baseFontSize + 1, 16),
+            baseFontSize
+        ]
+        let fontSize = sizeMap[min(max(level - 1, 0), sizeMap.count - 1)]
+        return attributedInlineText(
+            text,
+            attributes: blockAttributes(
+                font: .systemFont(ofSize: fontSize, weight: .bold),
+                color: .labelColor,
+                lineSpacing: 2,
+                paragraphSpacing: 9
+            ),
+            baseFontSize: baseFontSize
+        )
+    }
+
+    private static func listBlock(marker: String, text: String, indentLevel: Int, ordered: Bool, baseFontSize: Double) -> NSAttributedString {
+        let indent = CGFloat(18 + (indentLevel * 16))
+        let paragraphStyle = NSMutableParagraphStyle()
+        paragraphStyle.lineSpacing = 2.5
+        paragraphStyle.paragraphSpacing = 5
+        paragraphStyle.firstLineHeadIndent = indent
+        paragraphStyle.headIndent = indent + 18
+        paragraphStyle.tabStops = [NSTextTab(textAlignment: .left, location: indent + 18)]
+
+        let prefix = ordered ? "\(marker)\t" : "•\t"
+        let result = NSMutableAttributedString(
+            string: prefix,
+            attributes: [
+                .font: NSFont.systemFont(ofSize: baseFontSize, weight: .semibold),
+                .foregroundColor: NSColor.controlAccentColor,
+                .paragraphStyle: paragraphStyle
+            ]
+        )
+        result.append(
+            attributedInlineText(
+                text,
+                attributes: [
+                    .font: NSFont.systemFont(ofSize: baseFontSize),
+                    .foregroundColor: NSColor.labelColor,
+                    .paragraphStyle: paragraphStyle
+                ],
+                baseFontSize: baseFontSize,
+                appendSpacing: true
+            )
+        )
+        return result
+    }
+
+    private static func blockQuote(_ text: String, baseFontSize: Double) -> NSAttributedString {
+        let paragraphStyle = NSMutableParagraphStyle()
+        paragraphStyle.lineSpacing = 2.5
+        paragraphStyle.paragraphSpacing = 7
+        paragraphStyle.firstLineHeadIndent = 16
+        paragraphStyle.headIndent = 16
+
+        let quote = NSMutableAttributedString(
+            string: "▍ ",
+            attributes: [
+                .font: NSFont.systemFont(ofSize: baseFontSize + 2, weight: .bold),
+                .foregroundColor: NSColor.controlAccentColor,
+                .paragraphStyle: paragraphStyle
+            ]
+        )
+        quote.append(
+            attributedInlineText(
+                text,
+                attributes: [
+                    .font: NSFont.systemFont(ofSize: baseFontSize),
+                    .foregroundColor: NSColor.secondaryLabelColor,
+                    .paragraphStyle: paragraphStyle,
+                    .obliqueness: 0.1
+                ],
+                baseFontSize: baseFontSize,
+                appendSpacing: true
+            )
+        )
+        return quote
+    }
+
+    private static func codeBlock(_ text: String, baseFontSize: Double) -> NSAttributedString {
+        let paragraphStyle = NSMutableParagraphStyle()
+        paragraphStyle.lineSpacing = 2
+        paragraphStyle.paragraphSpacing = 8
+        paragraphStyle.firstLineHeadIndent = 16
+        paragraphStyle.headIndent = 16
+
+        return NSAttributedString(
+            string: text + "\n\n",
+            attributes: [
+                .font: NSFont.monospacedSystemFont(ofSize: max(baseFontSize - 1, 12), weight: .regular),
+                .foregroundColor: NSColor.labelColor,
+                .backgroundColor: NSColor.controlBackgroundColor,
+                .paragraphStyle: paragraphStyle
+            ]
+        )
+    }
+
+    private static func horizontalRule(baseFontSize: Double) -> NSAttributedString {
+        let paragraphStyle = NSMutableParagraphStyle()
+        paragraphStyle.paragraphSpacing = 8
+        paragraphStyle.alignment = .center
+
+        return NSAttributedString(
+            string: "────────────\n\n",
+            attributes: [
+                .font: NSFont.systemFont(ofSize: max(baseFontSize - 1, 12), weight: .medium),
+                .foregroundColor: NSColor.separatorColor,
+                .paragraphStyle: paragraphStyle
+            ]
+        )
+    }
+
+    private static func blockAttributes(
+        font: NSFont,
+        color: NSColor,
+        lineSpacing: CGFloat,
+        paragraphSpacing: CGFloat
+    ) -> [NSAttributedString.Key: Any] {
+        let paragraphStyle = NSMutableParagraphStyle()
+        paragraphStyle.lineSpacing = lineSpacing
+        paragraphStyle.paragraphSpacing = paragraphSpacing
+
+        return [
+            .font: font,
+            .foregroundColor: color,
+            .paragraphStyle: paragraphStyle
+        ]
+    }
+
+    private static func attributedInlineText(
+        _ text: String,
+        attributes: [NSAttributedString.Key: Any],
+        baseFontSize: Double,
+        appendSpacing: Bool = true
+    ) -> NSAttributedString {
+        let result = NSMutableAttributedString()
+        let nsText = text as NSString
+        let pattern = #"\[([^\]]+)\]\(([^)]+)\)|`([^`\n]+)`|\*\*([^*]+)\*\*|__([^_]+)__|(?<!\*)\*([^*\n]+)\*(?!\*)|(?<!_)_([^_\n]+)_(?!_)"#
+        let regex = try? NSRegularExpression(pattern: pattern)
+        let matches = regex?.matches(in: text, range: NSRange(location: 0, length: nsText.length)) ?? []
+
+        var currentLocation = 0
+        for match in matches {
+            if match.range.location > currentLocation {
+                let plain = nsText.substring(with: NSRange(location: currentLocation, length: match.range.location - currentLocation))
+                result.append(NSAttributedString(string: plain, attributes: attributes))
+            }
+
+            if match.range(at: 1).location != NSNotFound, match.range(at: 2).location != NSNotFound {
+                let label = nsText.substring(with: match.range(at: 1))
+                let href = nsText.substring(with: match.range(at: 2))
+                var linkAttributes = attributes
+                linkAttributes[.link] = href
+                linkAttributes[.foregroundColor] = NSColor.controlAccentColor
+                linkAttributes[.underlineStyle] = NSUnderlineStyle.single.rawValue
+                result.append(attributedInlineText(label, attributes: linkAttributes, baseFontSize: baseFontSize, appendSpacing: false))
+            } else if match.range(at: 3).location != NSNotFound {
+                let code = nsText.substring(with: match.range(at: 3))
+                var codeAttributes = attributes
+                codeAttributes[.font] = NSFont.monospacedSystemFont(ofSize: max(baseFontSize - 1, 12), weight: .regular)
+                codeAttributes[.backgroundColor] = NSColor.controlBackgroundColor
+                result.append(NSAttributedString(string: code, attributes: codeAttributes))
+            } else if match.range(at: 4).location != NSNotFound || match.range(at: 5).location != NSNotFound {
+                let range = match.range(at: 4).location != NSNotFound ? match.range(at: 4) : match.range(at: 5)
+                let boldText = nsText.substring(with: range)
+                var boldAttributes = attributes
+                boldAttributes[.font] = makeFont(from: attributes[.font] as? NSFont, baseFontSize: baseFontSize, weight: .bold)
+                result.append(attributedInlineText(boldText, attributes: boldAttributes, baseFontSize: baseFontSize, appendSpacing: false))
+            } else if match.range(at: 6).location != NSNotFound || match.range(at: 7).location != NSNotFound {
+                let range = match.range(at: 6).location != NSNotFound ? match.range(at: 6) : match.range(at: 7)
+                let italicText = nsText.substring(with: range)
+                var italicAttributes = attributes
+                italicAttributes[.font] = makeItalicFont(from: attributes[.font] as? NSFont, baseFontSize: baseFontSize)
+                result.append(attributedInlineText(italicText, attributes: italicAttributes, baseFontSize: baseFontSize, appendSpacing: false))
+            }
+
+            currentLocation = match.range.location + match.range.length
+        }
+
+        if currentLocation < nsText.length {
+            let trailing = nsText.substring(from: currentLocation)
+            result.append(NSAttributedString(string: trailing, attributes: attributes))
+        }
+
+        if appendSpacing {
+            result.append(NSAttributedString(string: "\n\n", attributes: attributes))
+        }
+
+        return result
+    }
+
+    private static func makeFont(from current: NSFont?, baseFontSize: Double, weight: NSFont.Weight) -> NSFont {
+        let size = current?.pointSize ?? CGFloat(baseFontSize)
+        return .systemFont(ofSize: size, weight: weight)
+    }
+
+    private static func makeItalicFont(from current: NSFont?, baseFontSize: Double) -> NSFont {
+        let size = current?.pointSize ?? CGFloat(baseFontSize)
+        return NSFontManager.shared.convert(.systemFont(ofSize: size), toHaveTrait: .italicFontMask)
+    }
+
+    private static func headingMatch(for line: String) -> (level: Int, text: String)? {
+        let nsLine = line as NSString
+        let regex = try? NSRegularExpression(pattern: #"^(#{1,6})\s+(.+)$"#)
+        guard
+            let match = regex?.firstMatch(in: line, range: NSRange(location: 0, length: nsLine.length)),
+            match.numberOfRanges == 3
+        else {
+            return nil
+        }
+
+        let level = nsLine.substring(with: match.range(at: 1)).count
+        let text = nsLine.substring(with: match.range(at: 2))
+        return (level, text)
+    }
+
+    private static func listMatch(for line: String) -> (marker: String, text: String, indentLevel: Int, ordered: Bool)? {
+        let nsLine = line as NSString
+        let regex = try? NSRegularExpression(pattern: #"^(\s*)([-*+]|\d+\.)\s+(.+)$"#)
+        guard
+            let match = regex?.firstMatch(in: line, range: NSRange(location: 0, length: nsLine.length)),
+            match.numberOfRanges == 4
+        else {
+            return nil
+        }
+
+        let indentation = nsLine.substring(with: match.range(at: 1)).count / 2
+        let marker = nsLine.substring(with: match.range(at: 2))
+        let text = nsLine.substring(with: match.range(at: 3))
+        let ordered = marker.range(of: #"\d+\."#, options: .regularExpression) != nil
+        return (marker, text, indentation, ordered)
+    }
+
+    private static func quoteMatch(for line: String) -> String? {
+        let nsLine = line as NSString
+        let regex = try? NSRegularExpression(pattern: #"^>\s?(.*)$"#)
+        guard
+            let match = regex?.firstMatch(in: line, range: NSRange(location: 0, length: nsLine.length)),
+            match.numberOfRanges == 2
+        else {
+            return nil
+        }
+
+        return nsLine.substring(with: match.range(at: 1))
+    }
+
+    private static func isHorizontalRule(_ line: String) -> Bool {
+        line.range(of: #"^(\*\s*\*\s*\*|-{3,}|_{3,})$"#, options: .regularExpression) != nil
+    }
+}
+
 struct NewNoteActionKey: FocusedValueKey {
     typealias Value = () -> Void
 }
@@ -122,6 +516,7 @@ struct NormalizedTextEditor: NSViewRepresentable {
 struct ContentView: View {
     @AppStorage("notepadSelectedTabID") private var selectedTabIDString: String = ""
     @AppStorage("notepadFontSize") private var fontSize: Double = 16
+    @AppStorage("notepadMarkdownPreviewEnabled") private var markdownPreviewEnabled = false
 
     @State private var tabs: [Note] = []
     @State private var selectedTabID: UUID? = nil
@@ -209,22 +604,45 @@ struct ContentView: View {
 
     private func editorView(for selectedTabID: UUID) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            TextField("Título", text: bindingForTitle(selectedTabID))
-                .textFieldStyle(.plain)
-                .font(.system(size: max(fontSize + 8, 24), weight: .bold))
+            HStack(alignment: .center, spacing: 10) {
+                Toggle(isOn: $markdownPreviewEnabled) {
+                    EmptyView()
+                }
+                .toggleStyle(.switch)
+                .labelsHidden()
+                .help(markdownPreviewEnabled ? "Cambiar a edición" : "Cambiar a vista Markdown")
+
+                TextField("Título", text: bindingForTitle(selectedTabID))
+                    .textFieldStyle(.plain)
+                    .font(.system(size: max(fontSize + 8, 24), weight: .bold))
+            }
+            .padding(.horizontal, 12)
+            .padding(.top, 12)
+
+            Text(markdownPreviewEnabled ? "Vista Markdown" : "Edición")
+                .font(.caption)
+                .foregroundStyle(.secondary)
                 .padding(.horizontal, 12)
-                .padding(.top, 12)
 
             Divider()
                 .padding(.horizontal, 12)
 
-            NormalizedTextEditor(
-                text: bindingForText(selectedTabID),
-                fontSize: fontSize,
-                normalize: normalizeApostrophes
-            )
-            .id(selectedTabID) // Force recreation when switching tabs
-            .padding(12)
+            if markdownPreviewEnabled {
+                MarkdownPreviewView(
+                    text: tabs.first(where: { $0.id == selectedTabID })?.text ?? "",
+                    baseFontSize: fontSize
+                )
+                .padding(.horizontal, 12)
+                .padding(.bottom, 12)
+            } else {
+                NormalizedTextEditor(
+                    text: bindingForText(selectedTabID),
+                    fontSize: fontSize,
+                    normalize: normalizeApostrophes
+                )
+                .id(selectedTabID) // Force recreation when switching tabs
+                .padding(12)
+            }
         }
     }
 
