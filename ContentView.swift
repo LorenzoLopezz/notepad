@@ -37,6 +37,8 @@ struct MarkdownPreviewView: NSViewRepresentable {
 }
 
 private enum MarkdownPreviewRenderer {
+    private static let blankLineGap: CGFloat = 8
+
     static func render(text: String, baseFontSize: Double) -> NSAttributedString {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
@@ -53,12 +55,21 @@ private enum MarkdownPreviewRenderer {
         var paragraphBuffer: [String] = []
         var codeBlockLines: [String] = []
         var isInsideCodeBlock = false
+        var pendingBlankLine = false
+        var hasEmittedBlock = false
+
+        func nextTopSpacing() -> CGFloat {
+            guard hasEmittedBlock else { return 0 }
+            return pendingBlankLine ? blankLineGap : 0
+        }
 
         func flushParagraph() {
             guard !paragraphBuffer.isEmpty else { return }
             let paragraphText = paragraphBuffer.joined(separator: " ")
-            result.append(paragraph(paragraphText, baseFontSize: baseFontSize))
+            result.append(paragraph(paragraphText, baseFontSize: baseFontSize, topSpacing: nextTopSpacing()))
             paragraphBuffer.removeAll()
+            hasEmittedBlock = true
+            pendingBlankLine = false
         }
 
         for line in lines {
@@ -67,8 +78,10 @@ private enum MarkdownPreviewRenderer {
             if trimmedLine.hasPrefix("```") {
                 flushParagraph()
                 if isInsideCodeBlock {
-                    result.append(codeBlock(codeBlockLines.joined(separator: "\n"), baseFontSize: baseFontSize))
+                    result.append(codeBlock(codeBlockLines.joined(separator: "\n"), baseFontSize: baseFontSize, topSpacing: nextTopSpacing()))
                     codeBlockLines.removeAll()
+                    hasEmittedBlock = true
+                    pendingBlankLine = false
                 }
                 isInsideCodeBlock.toggle()
                 continue
@@ -81,30 +94,39 @@ private enum MarkdownPreviewRenderer {
 
             if trimmedLine.isEmpty {
                 flushParagraph()
+                pendingBlankLine = true
                 continue
             }
 
             if let heading = headingMatch(for: line) {
                 flushParagraph()
-                result.append(headingBlock(level: heading.level, text: heading.text, baseFontSize: baseFontSize))
+                result.append(headingBlock(level: heading.level, text: heading.text, baseFontSize: baseFontSize, topSpacing: nextTopSpacing()))
+                hasEmittedBlock = true
+                pendingBlankLine = false
                 continue
             }
 
             if isHorizontalRule(trimmedLine) {
                 flushParagraph()
-                result.append(horizontalRule(baseFontSize: baseFontSize))
+                result.append(horizontalRule(baseFontSize: baseFontSize, topSpacing: nextTopSpacing()))
+                hasEmittedBlock = true
+                pendingBlankLine = false
                 continue
             }
 
             if let listItem = listMatch(for: line) {
                 flushParagraph()
-                result.append(listBlock(marker: listItem.marker, text: listItem.text, indentLevel: listItem.indentLevel, ordered: listItem.ordered, baseFontSize: baseFontSize))
+                result.append(listBlock(marker: listItem.marker, text: listItem.text, indentLevel: listItem.indentLevel, ordered: listItem.ordered, baseFontSize: baseFontSize, topSpacing: nextTopSpacing()))
+                hasEmittedBlock = true
+                pendingBlankLine = false
                 continue
             }
 
             if let quoteText = quoteMatch(for: line) {
                 flushParagraph()
-                result.append(blockQuote(quoteText, baseFontSize: baseFontSize))
+                result.append(blockQuote(quoteText, baseFontSize: baseFontSize, topSpacing: nextTopSpacing()))
+                hasEmittedBlock = true
+                pendingBlankLine = false
                 continue
             }
 
@@ -114,7 +136,7 @@ private enum MarkdownPreviewRenderer {
         flushParagraph()
 
         if isInsideCodeBlock, !codeBlockLines.isEmpty {
-            result.append(codeBlock(codeBlockLines.joined(separator: "\n"), baseFontSize: baseFontSize))
+            result.append(codeBlock(codeBlockLines.joined(separator: "\n"), baseFontSize: baseFontSize, topSpacing: nextTopSpacing()))
         }
 
         return result
@@ -127,20 +149,21 @@ private enum MarkdownPreviewRenderer {
         ]
     }
 
-    private static func paragraph(_ text: String, baseFontSize: Double) -> NSAttributedString {
+    private static func paragraph(_ text: String, baseFontSize: Double, topSpacing: CGFloat) -> NSAttributedString {
         attributedInlineText(
             text,
             attributes: blockAttributes(
                 font: .systemFont(ofSize: baseFontSize),
                 color: .labelColor,
-                lineSpacing: 3,
-                paragraphSpacing: 7
+                lineSpacing: 2,
+                paragraphSpacing: 1,
+                paragraphSpacingBefore: topSpacing
             ),
             baseFontSize: baseFontSize
         )
     }
 
-    private static func headingBlock(level: Int, text: String, baseFontSize: Double) -> NSAttributedString {
+    private static func headingBlock(level: Int, text: String, baseFontSize: Double, topSpacing: CGFloat) -> NSAttributedString {
         let sizeMap: [CGFloat] = [
             max(baseFontSize + 16, 28),
             max(baseFontSize + 10, 24),
@@ -155,18 +178,20 @@ private enum MarkdownPreviewRenderer {
             attributes: blockAttributes(
                 font: .systemFont(ofSize: fontSize, weight: .bold),
                 color: .labelColor,
-                lineSpacing: 2,
-                paragraphSpacing: 9
+                lineSpacing: 1,
+                paragraphSpacing: 2,
+                paragraphSpacingBefore: topSpacing
             ),
             baseFontSize: baseFontSize
         )
     }
 
-    private static func listBlock(marker: String, text: String, indentLevel: Int, ordered: Bool, baseFontSize: Double) -> NSAttributedString {
+    private static func listBlock(marker: String, text: String, indentLevel: Int, ordered: Bool, baseFontSize: Double, topSpacing: CGFloat) -> NSAttributedString {
         let indent = CGFloat(18 + (indentLevel * 16))
         let paragraphStyle = NSMutableParagraphStyle()
-        paragraphStyle.lineSpacing = 2.5
-        paragraphStyle.paragraphSpacing = 5
+        paragraphStyle.lineSpacing = 1.5
+        paragraphStyle.paragraphSpacing = 1
+        paragraphStyle.paragraphSpacingBefore = topSpacing
         paragraphStyle.firstLineHeadIndent = indent
         paragraphStyle.headIndent = indent + 18
         paragraphStyle.tabStops = [NSTextTab(textAlignment: .left, location: indent + 18)]
@@ -195,10 +220,11 @@ private enum MarkdownPreviewRenderer {
         return result
     }
 
-    private static func blockQuote(_ text: String, baseFontSize: Double) -> NSAttributedString {
+    private static func blockQuote(_ text: String, baseFontSize: Double, topSpacing: CGFloat) -> NSAttributedString {
         let paragraphStyle = NSMutableParagraphStyle()
-        paragraphStyle.lineSpacing = 2.5
-        paragraphStyle.paragraphSpacing = 7
+        paragraphStyle.lineSpacing = 1.5
+        paragraphStyle.paragraphSpacing = 1
+        paragraphStyle.paragraphSpacingBefore = topSpacing
         paragraphStyle.firstLineHeadIndent = 16
         paragraphStyle.headIndent = 16
 
@@ -226,15 +252,16 @@ private enum MarkdownPreviewRenderer {
         return quote
     }
 
-    private static func codeBlock(_ text: String, baseFontSize: Double) -> NSAttributedString {
+    private static func codeBlock(_ text: String, baseFontSize: Double, topSpacing: CGFloat) -> NSAttributedString {
         let paragraphStyle = NSMutableParagraphStyle()
-        paragraphStyle.lineSpacing = 2
-        paragraphStyle.paragraphSpacing = 8
+        paragraphStyle.lineSpacing = 1
+        paragraphStyle.paragraphSpacing = 1
+        paragraphStyle.paragraphSpacingBefore = topSpacing
         paragraphStyle.firstLineHeadIndent = 16
         paragraphStyle.headIndent = 16
 
         return NSAttributedString(
-            string: text + "\n\n",
+            string: text + "\n",
             attributes: [
                 .font: NSFont.monospacedSystemFont(ofSize: max(baseFontSize - 1, 12), weight: .regular),
                 .foregroundColor: NSColor.labelColor,
@@ -244,13 +271,14 @@ private enum MarkdownPreviewRenderer {
         )
     }
 
-    private static func horizontalRule(baseFontSize: Double) -> NSAttributedString {
+    private static func horizontalRule(baseFontSize: Double, topSpacing: CGFloat) -> NSAttributedString {
         let paragraphStyle = NSMutableParagraphStyle()
-        paragraphStyle.paragraphSpacing = 8
+        paragraphStyle.paragraphSpacing = 1
+        paragraphStyle.paragraphSpacingBefore = topSpacing
         paragraphStyle.alignment = .center
 
         return NSAttributedString(
-            string: "────────────\n\n",
+            string: "────────────\n",
             attributes: [
                 .font: NSFont.systemFont(ofSize: max(baseFontSize - 1, 12), weight: .medium),
                 .foregroundColor: NSColor.separatorColor,
@@ -263,11 +291,13 @@ private enum MarkdownPreviewRenderer {
         font: NSFont,
         color: NSColor,
         lineSpacing: CGFloat,
-        paragraphSpacing: CGFloat
+        paragraphSpacing: CGFloat,
+        paragraphSpacingBefore: CGFloat = 0
     ) -> [NSAttributedString.Key: Any] {
         let paragraphStyle = NSMutableParagraphStyle()
         paragraphStyle.lineSpacing = lineSpacing
         paragraphStyle.paragraphSpacing = paragraphSpacing
+        paragraphStyle.paragraphSpacingBefore = paragraphSpacingBefore
 
         return [
             .font: font,
@@ -284,7 +314,14 @@ private enum MarkdownPreviewRenderer {
     ) -> NSAttributedString {
         let result = NSMutableAttributedString()
         let nsText = text as NSString
-        let pattern = #"\[([^\]]+)\]\(([^)]+)\)|`([^`\n]+)`|\*\*([^*]+)\*\*|__([^_]+)__|(?<!\*)\*([^*\n]+)\*(?!\*)|(?<!_)_([^_\n]+)_(?!_)"#
+        // Group order:
+        //  1: escape char (\\X)
+        //  2,3: link label / href
+        //  4: double-backtick inline code (allows single backticks inside)
+        //  5: single-backtick inline code
+        //  6,7: bold (** or __)
+        //  8,9: italic (* or _)
+        let pattern = #"\\(.)|\[([^\]]+)\]\(([^)]+)\)|``(.+?)``|`([^`\n]+)`|\*\*([^*]+)\*\*|__([^_]+)__|(?<!\*)\*([^*\n]+)\*(?!\*)|(?<!_)_([^_\n]+)_(?!_)"#
         let regex = try? NSRegularExpression(pattern: pattern)
         let matches = regex?.matches(in: text, range: NSRange(location: 0, length: nsText.length)) ?? []
 
@@ -295,28 +332,32 @@ private enum MarkdownPreviewRenderer {
                 result.append(NSAttributedString(string: plain, attributes: attributes))
             }
 
-            if match.range(at: 1).location != NSNotFound, match.range(at: 2).location != NSNotFound {
-                let label = nsText.substring(with: match.range(at: 1))
-                let href = nsText.substring(with: match.range(at: 2))
+            if match.range(at: 1).location != NSNotFound {
+                let escaped = nsText.substring(with: match.range(at: 1))
+                result.append(NSAttributedString(string: escaped, attributes: attributes))
+            } else if match.range(at: 2).location != NSNotFound, match.range(at: 3).location != NSNotFound {
+                let label = nsText.substring(with: match.range(at: 2))
+                let href = nsText.substring(with: match.range(at: 3))
                 var linkAttributes = attributes
                 linkAttributes[.link] = href
                 linkAttributes[.foregroundColor] = NSColor.controlAccentColor
                 linkAttributes[.underlineStyle] = NSUnderlineStyle.single.rawValue
                 result.append(attributedInlineText(label, attributes: linkAttributes, baseFontSize: baseFontSize, appendSpacing: false))
-            } else if match.range(at: 3).location != NSNotFound {
-                let code = nsText.substring(with: match.range(at: 3))
+            } else if match.range(at: 4).location != NSNotFound || match.range(at: 5).location != NSNotFound {
+                let range = match.range(at: 4).location != NSNotFound ? match.range(at: 4) : match.range(at: 5)
+                let code = nsText.substring(with: range)
                 var codeAttributes = attributes
                 codeAttributes[.font] = NSFont.monospacedSystemFont(ofSize: max(baseFontSize - 1, 12), weight: .regular)
                 codeAttributes[.backgroundColor] = NSColor.controlBackgroundColor
                 result.append(NSAttributedString(string: code, attributes: codeAttributes))
-            } else if match.range(at: 4).location != NSNotFound || match.range(at: 5).location != NSNotFound {
-                let range = match.range(at: 4).location != NSNotFound ? match.range(at: 4) : match.range(at: 5)
+            } else if match.range(at: 6).location != NSNotFound || match.range(at: 7).location != NSNotFound {
+                let range = match.range(at: 6).location != NSNotFound ? match.range(at: 6) : match.range(at: 7)
                 let boldText = nsText.substring(with: range)
                 var boldAttributes = attributes
                 boldAttributes[.font] = makeFont(from: attributes[.font] as? NSFont, baseFontSize: baseFontSize, weight: .bold)
                 result.append(attributedInlineText(boldText, attributes: boldAttributes, baseFontSize: baseFontSize, appendSpacing: false))
-            } else if match.range(at: 6).location != NSNotFound || match.range(at: 7).location != NSNotFound {
-                let range = match.range(at: 6).location != NSNotFound ? match.range(at: 6) : match.range(at: 7)
+            } else if match.range(at: 8).location != NSNotFound || match.range(at: 9).location != NSNotFound {
+                let range = match.range(at: 8).location != NSNotFound ? match.range(at: 8) : match.range(at: 9)
                 let italicText = nsText.substring(with: range)
                 var italicAttributes = attributes
                 italicAttributes[.font] = makeItalicFont(from: attributes[.font] as? NSFont, baseFontSize: baseFontSize)
@@ -332,7 +373,7 @@ private enum MarkdownPreviewRenderer {
         }
 
         if appendSpacing {
-            result.append(NSAttributedString(string: "\n\n", attributes: attributes))
+            result.append(NSAttributedString(string: "\n", attributes: attributes))
         }
 
         return result
